@@ -2,12 +2,11 @@ from fastapi import FastAPI
 import numpy as np
 import joblib
 import requests
-import os
 
 app = FastAPI()
 
 # =========================
-# ENV
+# API KEY (HARDCODED)
 # =========================
 API_KEY = "9e37120cfdb54781b8371238261404"
 
@@ -16,26 +15,22 @@ API_KEY = "9e37120cfdb54781b8371238261404"
 # =========================
 rain_model = joblib.load("training/rain_model_final.pkl")
 storm_model = joblib.load("training/thunderstorm_xgb_model.pkl")
+heat_model = joblib.load("training/heat_model.pkl")
+pollution_model = joblib.load("training/pollution_model.pkl")
 
 rain_threshold = 0.72
 
 # =========================
-# FEATURE LISTS (REAL-TIME)
+# BASE FEATURE POOL
+# (we'll dynamically slice what each model needs)
 # =========================
-rain_features = [
-    'lat','lon','temperature_C','humidity_pct','pressure_hPa',
-    'dew_point_C','pressure_trend','solar_radiation_Wm2',
-    'wind_speed_ms','cloud_cover_pct',
-    'wind_dir_sin','wind_dir_cos',
-    'et0_mm','temp_dew_diff','humidity_pressure'
-]
-
-storm_features = [
+base_features = [
     'lat','lon','temperature_C','humidity_pct','pressure_hPa',
     'dew_point_C','pressure_trend','solar_radiation_Wm2',
     'wind_speed_ms','cloud_cover_pct','hour','month',
     'wind_direction_deg','wind_dir_sin','wind_dir_cos',
-    'et0_mm','precip_mm','city_encoded'
+    'et0_mm','precip_mm','city_encoded',
+    'temp_dew_diff','humidity_pressure'
 ]
 
 # =========================
@@ -43,7 +38,7 @@ storm_features = [
 # =========================
 def get_weather(city: str):
     url = f"http://api.weatherapi.com/v1/current.json?key={API_KEY}&q={city}"
-    res = requests.get(url)
+    res = requests.get(url, timeout=10)
     data = res.json()
 
     if "current" not in data:
@@ -82,34 +77,65 @@ def get_weather(city: str):
         "city_encoded": 1
     }
 
-    # feature engineering
+    # Feature engineering
     sample["temp_dew_diff"] = temp - dew
     sample["humidity_pressure"] = humidity * pressure
 
     return sample
 
 # =========================
-# BUILD INPUT (FIXED)
+# BUILD INPUT (SMART)
 # =========================
-def build_input(sample, features, expected_size=None):
+def build_input_dynamic(sample, model, fallback_features):
+    """
+    Automatically matches feature size required by model
+    """
+    # Try to use exact feature names if available
+    if hasattr(model, "feature_names_in_"):
+        features = list(model.feature_names_in_)
+    else:
+        features = fallback_features
+
     values = [sample.get(col, 0) for col in features]
 
-    # pad missing features
-    if expected_size and len(values) < expected_size:
-        values += [0] * (expected_size - len(values))
+    # Adjust size if needed
+    expected = getattr(model, "n_features_in_", len(values))
+
+    if len(values) > expected:
+        values = values[:expected]
+    elif len(values) < expected:
+        values += [0] * (expected - len(values))
 
     return np.array([values])
 
 # =========================
-# HOME
+# INTERPRETATION
+# =========================
+def categorize_heat(score):
+    if score < 30:
+        return "Low"
+    elif score < 40:
+        return "Moderate"
+    else:
+        return "High"
+
+def categorize_pollution(score):
+    if score < 50:
+        return "Good"
+    elif score < 100:
+        return "Moderate"
+    elif score < 150:
+        return "Unhealthy for Sensitive Groups"
+    else:
+        return "Unhealthy"
+
+# =========================
+# ROUTES
 # =========================
 @app.get("/")
 def home():
-    return {"message": "Weather API Running 🌧️⚡"}
+    return {"message": "Climate Intelligence API Running 🌍"}
 
-# =========================
-# CURRENT WEATHER
-# =========================
 @app.get("/weather/{city}")
 def weather(city: str):
     try:
@@ -127,34 +153,56 @@ def weather(city: str):
     except Exception as e:
         return {"error": str(e)}
 
-# =========================
-# PREDICTION
-# =========================
 @app.get("/predict/{city}")
 def predict(city: str):
     try:
         weather = get_weather(city)
 
-        # 🌧️ Rain (FIXED)
-        X_rain = build_input(weather, rain_features, expected_size=26)
+        # 🌧️ Rain
+        X_rain = build_input_dynamic(weather, rain_model, base_features)
         rain_prob = float(rain_model.predict_proba(X_rain)[0][1])
         rain_pred = int(rain_prob > rain_threshold)
 
         # ⚡ Storm
-        X_storm = build_input(weather, storm_features)
+        X_storm = build_input_dynamic(weather, storm_model, base_features)
         storm_prob = float(storm_model.predict_proba(X_storm)[0][1])
+
+        # 🌡️ Heat
+        X_heat = build_input_dynamic(weather, heat_model, base_features)
+        heat_score = float(heat_model.predict(X_heat)[0])
+
+        # 🌫️ Pollution
+        X_pollution = build_input_dynamic(weather, pollution_model, base_features)
+        pollution_score = float(pollution_model.predict(X_pollution)[0])
 
         return {
             "city": city,
+
             "current_weather": {
                 "temperature_C": weather["temperature_C"],
                 "humidity_pct": weather["humidity_pct"],
                 "pressure_hPa": weather["pressure_hPa"],
                 "cloud_cover_pct": weather["cloud_cover_pct"]
             },
-            "rain_probability": round(rain_prob * 100, 2),
-            "rain_prediction": rain_pred,
-            "thunderstorm_probability": round(storm_prob * 100, 2)
+
+            "rain": {
+                "probability_%": round(rain_prob * 100, 2),
+                "prediction": rain_pred
+            },
+
+            "thunderstorm": {
+                "probability_%": round(storm_prob * 100, 2)
+            },
+
+            "heat_risk": {
+                "score": round(heat_score, 2),
+                "level": categorize_heat(heat_score)
+            },
+
+            "air_pollution": {
+                "score": round(pollution_score, 2),
+                "category": categorize_pollution(pollution_score)
+            }
         }
 
     except Exception as e:
