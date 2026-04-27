@@ -9,7 +9,7 @@ app = FastAPI()
 # =========================
 # ENV
 # =========================
-API_KEY = os.getenv("API_KEY")
+API_KEY = "9e37120cfdb54781b8371238261404"
 
 # =========================
 # LOAD MODELS
@@ -20,7 +20,7 @@ storm_model = joblib.load("training/thunderstorm_xgb_model.pkl")
 rain_threshold = 0.72
 
 # =========================
-# FEATURE LISTS
+# FEATURE LISTS (REAL-TIME)
 # =========================
 rain_features = [
     'lat','lon','temperature_C','humidity_pct','pressure_hPa',
@@ -89,10 +89,16 @@ def get_weather(city: str):
     return sample
 
 # =========================
-# BUILD INPUT
+# BUILD INPUT (FIXED)
 # =========================
-def build_input(sample, features):
-    return np.array([[sample.get(col, 0) for col in features]])
+def build_input(sample, features, expected_size=None):
+    values = [sample.get(col, 0) for col in features]
+
+    # pad missing features
+    if expected_size and len(values) < expected_size:
+        values += [0] * (expected_size - len(values))
+
+    return np.array([values])
 
 # =========================
 # HOME
@@ -129,8 +135,8 @@ def predict(city: str):
     try:
         weather = get_weather(city)
 
-        # 🌧️ Rain
-        X_rain = build_input(weather, rain_features)
+        # 🌧️ Rain (FIXED)
+        X_rain = build_input(weather, rain_features, expected_size=26)
         rain_prob = float(rain_model.predict_proba(X_rain)[0][1])
         rain_pred = int(rain_prob > rain_threshold)
 
