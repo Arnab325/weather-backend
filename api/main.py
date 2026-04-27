@@ -9,7 +9,8 @@ app = FastAPI()
 # =========================
 # API KEY
 # =========================
-API_KEY = "9e37120cfdb54781b8371238261404"
+import os
+API_KEY = os.getenv("API_KEY")
 
 # =========================
 # LOAD MODELS
