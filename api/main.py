@@ -1,17 +1,29 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 import joblib
 import requests
+import os
 
 app = FastAPI()
 
 # =========================
-# API KEY (HARDCODED)
+# CORS
+# =========================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =========================
+# API KEY
 # =========================
 API_KEY = "9e37120cfdb54781b8371238261404"
 
 # =========================
-# LOAD MODELS
+# LOAD MODELS (ALL KEPT)
 # =========================
 rain_model = joblib.load("training/rain_model_final.pkl")
 storm_model = joblib.load("training/thunderstorm_xgb_model.pkl")
@@ -21,8 +33,7 @@ pollution_model = joblib.load("training/pollution_model.pkl")
 rain_threshold = 0.72
 
 # =========================
-# BASE FEATURE POOL
-# (we'll dynamically slice what each model needs)
+# FEATURE POOL (UNCHANGED)
 # =========================
 base_features = [
     'lat','lon','temperature_C','humidity_pct','pressure_hPa',
@@ -34,10 +45,10 @@ base_features = [
 ]
 
 # =========================
-# WEATHER FETCH
+# WEATHER FETCH (ADDED AQI)
 # =========================
 def get_weather(city: str):
-    url = f"http://api.weatherapi.com/v1/current.json?key={API_KEY}&q={city}"
+    url = f"http://api.weatherapi.com/v1/current.json?key={API_KEY}&q={city}&aqi=yes"
     res = requests.get(url, timeout=10)
     data = res.json()
 
@@ -46,6 +57,7 @@ def get_weather(city: str):
 
     current = data["current"]
     location = data["location"]
+    air = current.get("air_quality", {})
 
     wind_deg = current["wind_degree"]
     hour = int(location["localtime"].split(" ")[1].split(":")[0])
@@ -74,7 +86,15 @@ def get_weather(city: str):
         "hour": hour,
         "month": month,
         "precip_mm": 0,
-        "city_encoded": 1
+        "city_encoded": 1,
+
+        # 🔥 NEW: REAL GAS DATA
+        "co": air.get("co", 0),
+        "no2": air.get("no2", 0),
+        "o3": air.get("o3", 0),
+        "so2": air.get("so2", 0),
+        "pm2_5": air.get("pm2_5", 0),
+        "pm10": air.get("pm10", 0)
     }
 
     # Feature engineering
@@ -84,21 +104,16 @@ def get_weather(city: str):
     return sample
 
 # =========================
-# BUILD INPUT (SMART)
+# BUILD INPUT (UNCHANGED)
 # =========================
-def build_input_dynamic(sample, model, fallback_features):
-    """
-    Automatically matches feature size required by model
-    """
-    # Try to use exact feature names if available
+def build_input_dynamic(sample, model):
     if hasattr(model, "feature_names_in_"):
         features = list(model.feature_names_in_)
     else:
-        features = fallback_features
+        features = base_features
 
     values = [sample.get(col, 0) for col in features]
 
-    # Adjust size if needed
     expected = getattr(model, "n_features_in_", len(values))
 
     if len(values) > expected:
@@ -109,7 +124,7 @@ def build_input_dynamic(sample, model, fallback_features):
     return np.array([values])
 
 # =========================
-# INTERPRETATION
+# INTERPRETATION (KEPT)
 # =========================
 def categorize_heat(score):
     if score < 30:
@@ -136,53 +151,45 @@ def categorize_pollution(score):
 def home():
     return {"message": "Climate Intelligence API Running 🌍"}
 
-@app.get("/weather/{city}")
-def weather(city: str):
-    try:
-        w = get_weather(city)
-        return {
-            "city": city,
-            "temperature_C": w["temperature_C"],
-            "humidity_pct": w["humidity_pct"],
-            "pressure_hPa": w["pressure_hPa"],
-            "cloud_cover_pct": w["cloud_cover_pct"],
-            "wind_speed_ms": w["wind_speed_ms"],
-            "lat": w["lat"],
-            "lon": w["lon"]
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
 @app.get("/predict/{city}")
 def predict(city: str):
     try:
         weather = get_weather(city)
 
         # 🌧️ Rain
-        X_rain = build_input_dynamic(weather, rain_model, base_features)
+        X_rain = build_input_dynamic(weather, rain_model)
         rain_prob = float(rain_model.predict_proba(X_rain)[0][1])
         rain_pred = int(rain_prob > rain_threshold)
 
         # ⚡ Storm
-        X_storm = build_input_dynamic(weather, storm_model, base_features)
+        X_storm = build_input_dynamic(weather, storm_model)
         storm_prob = float(storm_model.predict_proba(X_storm)[0][1])
 
-        # 🌡️ Heat
-        X_heat = build_input_dynamic(weather, heat_model, base_features)
+        # 🌡️ Heat (RESTORED)
+        X_heat = build_input_dynamic(weather, heat_model)
         heat_score = float(heat_model.predict(X_heat)[0])
 
-        # 🌫️ Pollution
-        X_pollution = build_input_dynamic(weather, pollution_model, base_features)
+        # 🌫️ Pollution (RESTORED)
+        X_pollution = build_input_dynamic(weather, pollution_model)
         pollution_score = float(pollution_model.predict(X_pollution)[0])
 
         return {
             "city": city,
 
+            "location": {
+                "lat": weather["lat"],
+                "lon": weather["lon"]
+            },
+
             "current_weather": {
                 "temperature_C": weather["temperature_C"],
                 "humidity_pct": weather["humidity_pct"],
                 "pressure_hPa": weather["pressure_hPa"],
-                "cloud_cover_pct": weather["cloud_cover_pct"]
+                "cloud_cover_pct": weather["cloud_cover_pct"],
+                "wind_speed_ms": round(weather["wind_speed_ms"], 2),
+                "wind_direction_deg": weather["wind_direction_deg"],
+                "dew_point_C": weather["dew_point_C"],
+                "solar_radiation_Wm2": weather["solar_radiation_Wm2"]
             },
 
             "rain": {
@@ -194,6 +201,7 @@ def predict(city: str):
                 "probability_%": round(storm_prob * 100, 2)
             },
 
+            # 🔥 RESTORED MODELS
             "heat_risk": {
                 "score": round(heat_score, 2),
                 "level": categorize_heat(heat_score)
@@ -202,6 +210,16 @@ def predict(city: str):
             "air_pollution": {
                 "score": round(pollution_score, 2),
                 "category": categorize_pollution(pollution_score)
+            },
+
+            # 🔥 NEW REAL GAS DATA
+            "air_gases": {
+                "co": round(weather["co"], 2),
+                "no2": round(weather["no2"], 2),
+                "o3": round(weather["o3"], 2),
+                "so2": round(weather["so2"], 2),
+                "pm2_5": round(weather["pm2_5"], 2),
+                "pm10": round(weather["pm10"], 2)
             }
         }
 
