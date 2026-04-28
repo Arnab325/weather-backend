@@ -23,7 +23,7 @@ app.add_middleware(
 API_KEY = "9e37120cfdb54781b8371238261404"
 
 # =========================
-# LOAD MODELS (ALL KEPT)
+# LOAD MODELS
 # =========================
 rain_model = joblib.load("training/rain_model_final.pkl")
 storm_model = joblib.load("training/thunderstorm_xgb_model.pkl")
@@ -33,7 +33,7 @@ pollution_model = joblib.load("training/pollution_model.pkl")
 rain_threshold = 0.72
 
 # =========================
-# FEATURE POOL (UNCHANGED)
+# FEATURE POOL
 # =========================
 base_features = [
     'lat','lon','temperature_C','humidity_pct','pressure_hPa',
@@ -45,7 +45,14 @@ base_features = [
 ]
 
 # =========================
-# WEATHER FETCH (ADDED AQI)
+# WIND DIRECTION TEXT
+# =========================
+def get_wind_direction(deg):
+    directions = ["N","NE","E","SE","S","SW","W","NW"]
+    return directions[round(deg / 45) % 8]
+
+# =========================
+# WEATHER FETCH (WITH AQI)
 # =========================
 def get_weather(city: str):
     url = f"http://api.weatherapi.com/v1/current.json?key={API_KEY}&q={city}&aqi=yes"
@@ -75,20 +82,29 @@ def get_weather(city: str):
         "humidity_pct": humidity,
         "pressure_hPa": pressure,
         "dew_point_C": dew,
+
         "solar_radiation_Wm2": current.get("uv", 5) * 100,
+
         "wind_speed_ms": current["wind_kph"] / 3.6,
-        "cloud_cover_pct": current["cloud"],
+        "wind_speed_kph": current["wind_kph"],
         "wind_direction_deg": wind_deg,
+
+        "cloud_cover_pct": current["cloud"],
+        "visibility_km": current.get("vis_km", 0),
+        "uv_index": current.get("uv", 0),
+        "precip_mm": current.get("precip_mm", 0),
+        "feels_like_C": current.get("feelslike_c", temp),
+
         "wind_dir_sin": np.sin(np.radians(wind_deg)),
         "wind_dir_cos": np.cos(np.radians(wind_deg)),
+
         "et0_mm": 3,
         "pressure_trend": 0,
         "hour": hour,
         "month": month,
-        "precip_mm": 0,
         "city_encoded": 1,
 
-        # 🔥 NEW: REAL GAS DATA
+        # 🌫️ GAS DATA
         "co": air.get("co", 0),
         "no2": air.get("no2", 0),
         "o3": air.get("o3", 0),
@@ -97,14 +113,14 @@ def get_weather(city: str):
         "pm10": air.get("pm10", 0)
     }
 
-    # Feature engineering
+    # engineered features
     sample["temp_dew_diff"] = temp - dew
     sample["humidity_pressure"] = humidity * pressure
 
     return sample
 
 # =========================
-# BUILD INPUT (UNCHANGED)
+# BUILD INPUT
 # =========================
 def build_input_dynamic(sample, model):
     if hasattr(model, "feature_names_in_"):
@@ -124,7 +140,7 @@ def build_input_dynamic(sample, model):
     return np.array([values])
 
 # =========================
-# INTERPRETATION (KEPT)
+# INTERPRETATION
 # =========================
 def categorize_heat(score):
     if score < 30:
@@ -165,11 +181,11 @@ def predict(city: str):
         X_storm = build_input_dynamic(weather, storm_model)
         storm_prob = float(storm_model.predict_proba(X_storm)[0][1])
 
-        # 🌡️ Heat (RESTORED)
+        # 🌡️ Heat
         X_heat = build_input_dynamic(weather, heat_model)
         heat_score = float(heat_model.predict(X_heat)[0])
 
-        # 🌫️ Pollution (RESTORED)
+        # 🌫️ Pollution
         X_pollution = build_input_dynamic(weather, pollution_model)
         pollution_score = float(pollution_model.predict(X_pollution)[0])
 
@@ -181,38 +197,52 @@ def predict(city: str):
                 "lon": weather["lon"]
             },
 
+            # 🌤️ WEATHER (FULL)
             "current_weather": {
                 "temperature_C": weather["temperature_C"],
+                "feels_like_C": weather["feels_like_C"],
                 "humidity_pct": weather["humidity_pct"],
                 "pressure_hPa": weather["pressure_hPa"],
                 "cloud_cover_pct": weather["cloud_cover_pct"],
-                "wind_speed_ms": round(weather["wind_speed_ms"], 2),
-                "wind_direction_deg": weather["wind_direction_deg"],
-                "dew_point_C": weather["dew_point_C"],
-                "solar_radiation_Wm2": weather["solar_radiation_Wm2"]
+
+                "wind": {
+                    "speed_ms": round(weather["wind_speed_ms"], 2),
+                    "speed_kph": round(weather["wind_speed_kph"], 2),
+                    "direction_deg": weather["wind_direction_deg"],
+                    "direction": get_wind_direction(weather["wind_direction_deg"])
+                },
+
+                "visibility_km": weather["visibility_km"],
+                "uv_index": weather["uv_index"],
+                "precip_mm": weather["precip_mm"],
+                "solar_radiation_Wm2": weather["solar_radiation_Wm2"],
+                "dew_point_C": weather["dew_point_C"]
             },
 
+            # 🌧️ RAIN
             "rain": {
                 "probability_%": round(rain_prob * 100, 2),
                 "prediction": rain_pred
             },
 
+            # ⚡ STORM
             "thunderstorm": {
                 "probability_%": round(storm_prob * 100, 2)
             },
 
-            # 🔥 RESTORED MODELS
+            # 🌡️ HEAT
             "heat_risk": {
                 "score": round(heat_score, 2),
                 "level": categorize_heat(heat_score)
             },
 
+            # 🌫️ POLLUTION MODEL
             "air_pollution": {
                 "score": round(pollution_score, 2),
                 "category": categorize_pollution(pollution_score)
             },
 
-            # 🔥 NEW REAL GAS DATA
+            # 🧪 REAL GASES
             "air_gases": {
                 "co": round(weather["co"], 2),
                 "no2": round(weather["no2"], 2),
