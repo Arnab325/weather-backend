@@ -151,11 +151,11 @@ def categorize_heat(score):
         return "High"
 
 def categorize_pollution(score):
-    if score < 50:
+    if score == 0:
         return "Good"
-    elif score < 100:
+    elif score == 1:
         return "Moderate"
-    elif score < 150:
+    elif score == 2:
         return "Unhealthy for Sensitive Groups"
     else:
         return "Unhealthy"
