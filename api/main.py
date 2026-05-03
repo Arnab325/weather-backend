@@ -52,10 +52,11 @@ def get_wind_direction(deg):
     return directions[round(deg / 45) % 8]
 
 # =========================
-# WEATHER FETCH (WITH AQI)
+# WEATHER FETCH (UPDATED)
 # =========================
-def get_weather(city: str):
-    url = f"http://api.weatherapi.com/v1/current.json?key={API_KEY}&q={city}&aqi=yes"
+def get_weather(query: str):
+    # query can be "Kolkata" OR "22.57,88.36"
+    url = f"http://api.weatherapi.com/v1/current.json?key={API_KEY}&q={query}&aqi=yes"
     res = requests.get(url, timeout=10)
     data = res.json()
 
@@ -113,11 +114,10 @@ def get_weather(city: str):
         "pm10": air.get("pm10", 0)
     }
 
-    # engineered features
     sample["temp_dew_diff"] = temp - dew
     sample["humidity_pressure"] = humidity * pressure
 
-    return sample
+    return sample, location
 
 # =========================
 # BUILD INPUT
@@ -167,10 +167,10 @@ def categorize_pollution(score):
 def home():
     return {"message": "Climate Intelligence API Running 🌍"}
 
-@app.get("/predict/{city}")
-def predict(city: str):
+@app.get("/predict/{query}")
+def predict(query: str):
     try:
-        weather = get_weather(city)
+        weather, location = get_weather(query)
 
         # 🌧️ Rain
         X_rain = build_input_dynamic(weather, rain_model)
@@ -190,14 +190,20 @@ def predict(city: str):
         pollution_score = float(pollution_model.predict(X_pollution)[0])
 
         return {
-            "city": city,
+            "query": query,
+
+            # 🌍 RESOLVED LOCATION
+            "resolved_location": {
+                "name": location["name"],
+                "region": location["region"],
+                "country": location["country"]
+            },
 
             "location": {
                 "lat": weather["lat"],
                 "lon": weather["lon"]
             },
 
-            # 🌤️ WEATHER (FULL)
             "current_weather": {
                 "temperature_C": weather["temperature_C"],
                 "feels_like_C": weather["feels_like_C"],
@@ -219,30 +225,25 @@ def predict(city: str):
                 "dew_point_C": weather["dew_point_C"]
             },
 
-            # 🌧️ RAIN
             "rain": {
                 "probability_%": round(rain_prob * 100, 2),
                 "prediction": rain_pred
             },
 
-            # ⚡ STORM
             "thunderstorm": {
                 "probability_%": round(storm_prob * 100, 2)
             },
 
-            # 🌡️ HEAT
             "heat_risk": {
                 "score": round(heat_score, 2),
                 "level": categorize_heat(heat_score)
             },
 
-            # 🌫️ POLLUTION MODEL
             "air_pollution": {
                 "score": round(pollution_score, 2),
                 "category": categorize_pollution(pollution_score)
             },
 
-            # 🧪 REAL GASES
             "air_gases": {
                 "co": round(weather["co"], 2),
                 "no2": round(weather["no2"], 2),
