@@ -143,9 +143,9 @@ def build_input_dynamic(sample, model):
 # INTERPRETATION
 # =========================
 def categorize_heat(score):
-    if score < 30:
+    if score == 0:
         return "Low"
-    elif score < 40:
+    elif score == 1:
         return "Moderate"
     else:
         return "High"
