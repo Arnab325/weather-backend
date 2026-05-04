@@ -25,7 +25,7 @@ API_KEY = "9e37120cfdb54781b8371238261404"
 # =========================
 # LOAD MODELS
 # =========================
-rain_model = joblib.load("training/rain_model_final.pkl")
+rain_model = joblib.load("training/rain_modelv3.pkl")
 storm_model = joblib.load("training/thunderstorm_xgb_model.pkl")
 heat_model = joblib.load("training/heat_model.pkl")
 pollution_model = joblib.load("training/pollution_model.pkl")
