@@ -52,10 +52,9 @@ def get_wind_direction(deg):
     return directions[round(deg / 45) % 8]
 
 # =========================
-# WEATHER FETCH (UPDATED)
+# WEATHER FETCH
 # =========================
 def get_weather(query: str):
-    # query can be "Kolkata" OR "22.57,88.36"
     url = f"http://api.weatherapi.com/v1/current.json?key={API_KEY}&q={query}&aqi=yes"
     res = requests.get(url, timeout=10)
     data = res.json()
@@ -172,78 +171,84 @@ def predict(query: str):
     try:
         weather, location = get_weather(query)
 
-        # 🌧️ Rain
-        X_rain = build_input_dynamic(weather, rain_model)
+        # =========================
+        # 🌧️ RAIN (ONLY FIXED PART)
+        # =========================
+        weather["precip_lag1"] = weather.get("precip_mm", 0)
+        weather["humidity_lag1"] = weather.get("humidity_pct", 0)
+        weather["pressure_lag1"] = weather.get("pressure_hPa", 0)
+
+        weather["pressure_change"] = 0
+        weather["humidity_change"] = 0
+
+        weather["precip_roll3"] = weather.get("precip_mm", 0)
+        weather["humidity_roll3"] = weather.get("humidity_pct", 0)
+        weather["pressure_roll3"] = weather.get("pressure_hPa", 0)
+
+        weather["rain_tomorrow_loc_avg"] = 0.2
+
+        rain_features = list(rain_model.feature_names_in_)
+        X_rain = np.array([[weather.get(f, 0) for f in rain_features]])
+
         rain_prob = float(rain_model.predict_proba(X_rain)[0][1])
         rain_pred = int(rain_prob > rain_threshold)
 
-        # ⚡ Storm
+        # =========================
+        # OTHER MODELS (UNCHANGED)
+        # =========================
         X_storm = build_input_dynamic(weather, storm_model)
         storm_prob = float(storm_model.predict_proba(X_storm)[0][1])
 
-        # 🌡️ Heat
         X_heat = build_input_dynamic(weather, heat_model)
         heat_score = float(heat_model.predict(X_heat)[0])
 
-        # 🌫️ Pollution
         X_pollution = build_input_dynamic(weather, pollution_model)
         pollution_score = float(pollution_model.predict(X_pollution)[0])
 
         return {
             "query": query,
-
-            # 🌍 RESOLVED LOCATION
             "resolved_location": {
                 "name": location["name"],
                 "region": location["region"],
                 "country": location["country"]
             },
-
             "location": {
                 "lat": weather["lat"],
                 "lon": weather["lon"]
             },
-
             "current_weather": {
                 "temperature_C": weather["temperature_C"],
                 "feels_like_C": weather["feels_like_C"],
                 "humidity_pct": weather["humidity_pct"],
                 "pressure_hPa": weather["pressure_hPa"],
                 "cloud_cover_pct": weather["cloud_cover_pct"],
-
                 "wind": {
                     "speed_ms": round(weather["wind_speed_ms"], 2),
                     "speed_kph": round(weather["wind_speed_kph"], 2),
                     "direction_deg": weather["wind_direction_deg"],
                     "direction": get_wind_direction(weather["wind_direction_deg"])
                 },
-
                 "visibility_km": weather["visibility_km"],
                 "uv_index": weather["uv_index"],
                 "precip_mm": weather["precip_mm"],
                 "solar_radiation_Wm2": weather["solar_radiation_Wm2"],
                 "dew_point_C": weather["dew_point_C"]
             },
-
             "rain": {
                 "probability_%": round(rain_prob * 100, 2),
                 "prediction": rain_pred
             },
-
             "thunderstorm": {
                 "probability_%": round(storm_prob * 100, 2)
             },
-
             "heat_risk": {
                 "score": round(heat_score, 2),
                 "level": categorize_heat(heat_score)
             },
-
             "air_pollution": {
                 "score": round(pollution_score, 2),
                 "category": categorize_pollution(pollution_score)
             },
-
             "air_gases": {
                 "co": round(weather["co"], 2),
                 "no2": round(weather["no2"], 2),
